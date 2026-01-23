@@ -19,7 +19,6 @@ BRANCH_BUILDING_ID = int(os.getenv("BRANCH_BUILDING_ID", 10815))
 DAYS_AHEAD = int(os.getenv("DAYS_AHEAD", 7))
 
 DRY_RUN = os.getenv("DRY_RUN", "False").lower() == "true"
-BOOK_NOW = os.getenv("BOOK_NOW", "True").lower() == "true"
 
 # Telegram
 TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "True").lower() == "true"
@@ -28,23 +27,17 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # ================= END CONFIG =================
 
-
 import requests
 import time
 from datetime import datetime, timedelta
 import pytz
 import sys
-from datetime import datetime, timedelta
-import pytz
-
-def get_target_date(days_ahead: int):
-    tz = pytz.timezone("Europe/Madrid")
-    now = datetime.now(tz)
-    return (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
 TZ = pytz.timezone(TIMEZONE)
-
 session = requests.Session()
+
+# Global token expiration tracking
+token_expires_at = None
 
 
 # ---------------- ALERTS ----------------
@@ -69,10 +62,10 @@ def fatal(msg):
 
 
 # ---------------- AUTH ----------------
+
 def check_token_valid():
     """Check if the current token is still valid"""
     try:
-        # Make a lightweight request to test the token
         test_url = f"{BASE_URL}/api/user_app/v2/activities/{ACTIVITY_ID}/admissions"
         test_params = {"date": datetime.now(TZ).strftime("%Y-%m-%d")}
         
@@ -85,9 +78,93 @@ def check_token_valid():
         return False
 
 
-def login():
-    print("🔐 Logging in...")
+def get_fresh_token_api(email, password):
+    """Get a fresh token using the API login endpoint"""
+    global token_expires_at
     
+    print("🔐 Getting fresh token via API...")
+    
+    try:
+        response = requests.post(
+            f"{BASE_URL}/api/user_app/v2/sessions",
+            headers={
+                "Accept": "application/timp.user-app-v2",
+                "api-access-key": API_ACCESS_KEY,
+                "App-Platform": "web",
+                "App-Version": "8.11.0",
+                "Content-Type": "application/json",
+                "Origin": "https://web.timp.pro",
+                "Referer": "https://web.timp.pro/",
+            },
+            json={
+                "email": email,
+                "password": password
+            }
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            token = data.get('serial')
+            
+            if token:
+                expires_str = data.get('expires_at')
+                if expires_str:
+                    # Parse expiration date
+                    token_expires_at = datetime.fromisoformat(expires_str.replace('Z', '+00:00'))
+                    print(f"✅ Got token: {token[:30]}...")
+                    print(f"⏰ Expires at: {expires_str}")
+                    telegram(f"🔑 New token obtained, expires {expires_str}")
+                return token
+            else:
+                print(f"❌ Token not found in response")
+                return None
+        else:
+            print(f"❌ Login failed with status {response.status_code}")
+            print(f"Response: {response.text}")
+            telegram(f"❌ Failed to get fresh token: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error getting token: {e}")
+        telegram(f"❌ Error getting token: {e}")
+        return None
+
+
+def refresh_token_if_needed(target_date):
+    """Refresh token if it will expire before the target booking date"""
+    global TOKEN, token_expires_at
+    
+    if not token_expires_at:
+        print("⚠️ Token expiration unknown, refreshing to be safe...")
+        fresh_token = get_fresh_token_api(EMAIL, PASSWORD)
+        if fresh_token:
+            TOKEN = fresh_token
+            update_session_headers()
+        return
+    
+    # Parse target date and add buffer time (1 hour for the booking window)
+    target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+    target_dt = TZ.localize(target_dt) + timedelta(hours=1)
+    
+    # If token expires before target date, refresh it
+    if token_expires_at <= target_dt:
+        print(f"🔄 Token expires {token_expires_at}, but booking is on {target_dt}")
+        print("🔄 Refreshing token preemptively...")
+        telegram(f"🔄 Refreshing token (expires before booking date)")
+        
+        fresh_token = get_fresh_token_api(EMAIL, PASSWORD)
+        if fresh_token:
+            TOKEN = fresh_token
+            update_session_headers()
+            print("✅ Token refreshed successfully")
+        else:
+            fatal("❌ Failed to refresh token before booking!")
+    else:
+        print(f"✅ Token valid until {token_expires_at}, booking on {target_dt}")
+
+
+def update_session_headers():
+    """Update session headers with current token"""
     session.headers.update({
         "Accept": "application/timp.user-app-v2",
         "api-access-token": TOKEN,
@@ -103,39 +180,58 @@ def login():
         "Content-Type": "application/json",
     })
 
-    # Check if token is valid
+
+def login():
+    global TOKEN
+    
+    print("🔐 Logging in...")
+    
+    # Try to get a fresh token
+    fresh_token = get_fresh_token_api(EMAIL, PASSWORD)
+    if fresh_token:
+        TOKEN = fresh_token
+        print(f"✅ Using fresh token")
+    else:
+        print(f"⚠️ Could not get fresh token, using existing one")
+    
+    update_session_headers()
+
     if not check_token_valid():
-        fatal("❌ TOKEN IS INVALID! Please update TOKEN in the config and restart.")
+        fatal("❌ TOKEN IS INVALID!")
     
     telegram("🔐 Logged in successfully")
     print("✅ Login OK")
-    
+
 
 def api_request(method, url, **kwargs):
-    print(f"🌐 {method} {url}")
-    print(f"📋 Params: {kwargs.get('params', {})}")
-    print(f"🔑 Headers: {dict(session.headers)}")
-    
     r = session.request(method, url, **kwargs)
-    
-    #print(f"📊 Status: {r.status_code}")
-    #print(f"📦 Response: {r.text[:500]}")  # First 500 chars
 
     if r.status_code == 401:
-        raise RuntimeError("❌ Token expired")
+        print("❌ 401 Unauthorized - Token may be expired")
+        telegram("⚠️ Token expired during request, attempting refresh...")
+        
+        # Try to refresh token
+        global TOKEN
+        fresh_token = get_fresh_token_api(EMAIL, PASSWORD)
+        if fresh_token:
+            TOKEN = fresh_token
+            update_session_headers()
+            # Retry the request
+            r = session.request(method, url, **kwargs)
+            if r.status_code == 401:
+                raise RuntimeError("❌ Token still invalid after refresh")
+        else:
+            raise RuntimeError("❌ Token expired and refresh failed")
 
     if r.status_code == 404:
-        print("⏳ Date not available yet")
+        print("⏳ Date not available yet (404)")
         return []
 
     if r.status_code == 304:
-        print("📦 Cached response → availability EXISTS")
         return r.json() if r.content else []
 
     r.raise_for_status()
     return r.json()
-
-
 
 
 # ---------------- TIME ----------------
@@ -148,7 +244,7 @@ def next_trigger():
     n = now()
     for i in range(8):
         d = (n + timedelta(days=i)).date()
-        if d.weekday() in (0, 3):
+        if d.weekday() in (0, 3):  # Monday (0) and Thursday (3)
             t = TZ.localize(datetime.combine(d, datetime.min.time())) + timedelta(seconds=1)
             if t > n:
                 return t
@@ -156,6 +252,9 @@ def next_trigger():
 
 
 def sleep_until(t):
+    remaining = (t - now()).total_seconds()
+    print(f"⏳ Sleeping for {remaining/3600:.2f} hours until {t.strftime('%Y-%m-%d %H:%M:%S')}")
+    
     while (t - now()).total_seconds() > 0:
         time.sleep(0.5)
 
@@ -164,10 +263,7 @@ def sleep_until(t):
 
 def get_slots(date_str):
     url = f"{BASE_URL}/api/user_app/v2/activities/{ACTIVITY_ID}/admissions"
-    params = {
-        "date": date_str
-        # Remove branch_building_id from params!
-    }
+    params = {"date": date_str}
     return api_request("GET", url, params=params)
 
 
@@ -184,20 +280,18 @@ def find_slot(slots):
 
 def book(slot_id):
     print(f"🎯 Attempting to book slot ID: {slot_id}")
-    print(f"🔧 DRY_RUN is set to: {DRY_RUN}")
     
     if DRY_RUN:
         telegram(f"🧪 DRY RUN booking {slot_id}")
         print("⚠️ DRY RUN mode - not actually booking")
-        return
+        return True
 
     print(f"📤 Making POST request to book...")
     
-    # Correct URL structure: /admissions/{id}/tickets
     r = api_request(
         "POST",
         f"{BASE_URL}/api/user_app/v2/admissions/{slot_id}/tickets",
-        json={}  # Empty body - the admission ID is in the URL
+        json={}
     )
 
     if not r or r == []:
@@ -215,30 +309,24 @@ def book(slot_id):
 
 if __name__ == "__main__":
     login()
-    telegram("🤖 TIMP Auto-Booking started")
-    
-    last_token_check = now()
+    telegram("🤖 TIMP Auto-Booking Bot started")
 
     while True:
-        # Check token every 6 hours
-        if (now() - last_token_check).total_seconds() > 6 * 3600:
-            print("🔍 Checking token validity...")
-            if not check_token_valid():
-                fatal("❌ TOKEN EXPIRED! Please get a new token and update the config.")
-            print("✅ Token still valid")
-            last_token_check = now()
-        
         trigger = next_trigger()
-        print(f"⏰ Next booking window: {trigger.strftime('%Y-%m-%d %H:%M:%S')}")
         target_date = (trigger + timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
-        print(f"Target date: ", target_date)
+        
+        print(f"\n{'='*60}")
+        print(f"⏰ Next booking window: {trigger.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🎯 Target booking date: {target_date}")
+        print(f"{'='*60}\n")
+        
+        # Check if token needs refresh before target date
+        refresh_token_if_needed(target_date)
         
         sleep_until(trigger)
 
-        # Book for 7 days from the trigger date
-        target_date = (trigger + timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
         telegram(f"🚀 Booking window open for {target_date}")
-        print(f"🎯 Trying to book slot for {target_date}")
+        print(f"🎯 Starting booking attempt for {target_date}")
 
         start = time.time()
         booked = False
@@ -260,14 +348,17 @@ if __name__ == "__main__":
                     print("❌ Booking failed, retrying...")
                     time.sleep(2)
             else:
-                print(f"⏳ Slot not available yet, retrying... ({int(time.time() - start)}s elapsed)")
+                elapsed = int(time.time() - start)
+                if elapsed % 10 == 0:  # Print every 10 seconds
+                    print(f"⏳ Slot not available yet ({elapsed}s elapsed)")
                 time.sleep(1)
 
         if booked:
             print(f"✅ Successfully booked! Waiting for next cycle...")
+            telegram(f"✅ Successfully booked {target_date} at {TARGET_HOURS}")
         else:
             print(f"❌ Failed to book after 2 minutes")
-            telegram(f"❌ Failed to book {target_date}")
+            telegram(f"❌ Failed to book {target_date} - slot may not have opened")
 
-        print("🔁 Waiting for next cycle (next Monday or Thursday)")
+        print("🔁 Waiting for next cycle (next Monday or Thursday)\n")
 
