@@ -168,7 +168,7 @@ def next_trigger():
     for i in range(8):
         d = (n + timedelta(days=i)).date()
         if d.weekday() in (0, 3):  # Monday & Thursday
-            t = TZ.localize(datetime.combine(d, datetime.min.time())) + timedelta(seconds=1)
+            t = TZ.localize(datetime.combine(d, datetime.min.time())) - timedelta(seconds=15)
             if t > n:
                 return t
     fatal("No trigger time found")
@@ -258,11 +258,11 @@ if __name__ == "__main__":
                 if book(slot["id"]):
                     booked = True
                     break
-                time.sleep(2)
+                time.sleep(0.25)
             else:
                 if int(time.time() - start) % 10 == 0:
                     print("⏳ Slot not available yet")
-                time.sleep(1)
+                time.sleep(0.25)
 
         if booked:
             telegram(f"✅ Successfully booked {target_date} at {TARGET_HOURS}")
@@ -272,3 +272,4 @@ if __name__ == "__main__":
             print("❌ Booking failed")
 
         print("🔁 Waiting for next cycle\n")
+
