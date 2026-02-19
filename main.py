@@ -21,7 +21,7 @@ TARGET_HOURS = os.getenv("TARGET_HOURS", "17:00 - 18:00")
 TARGET_PROFESSIONAL_ID = int(os.getenv("TARGET_PROFESSIONAL_ID", 44640))
 ACTIVITY_ID = int(os.getenv("ACTIVITY_ID", 69123))
 BRANCH_BUILDING_ID = int(os.getenv("BRANCH_BUILDING_ID", 10815))
-DAYS_AHEAD = int(os.getenv("DAYS_AHEAD", 7))
+DAYS_AHEAD = int(os.getenv("DAYS_AHEAD", 8))
 
 DRY_RUN = os.getenv("DRY_RUN", "False").lower() == "true"
 
@@ -168,7 +168,7 @@ def next_trigger():
     for i in range(8):
         d = (n + timedelta(days=i)).date()
         if d.weekday() in (0, 3):  # Monday & Thursday
-            t = TZ.localize(datetime.combine(d, datetime.min.time())) - timedelta(seconds=15)
+            t = TZ.localize(datetime.combine(d, datetime.min.time())) - timedelta(seconds=4)
             if t > n:
                 return t
     fatal("No trigger time found")
@@ -272,4 +272,5 @@ if __name__ == "__main__":
             print("❌ Booking failed")
 
         print("🔁 Waiting for next cycle\n")
+
 
