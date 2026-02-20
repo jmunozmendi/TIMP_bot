@@ -260,8 +260,7 @@ if __name__ == "__main__":
                     break
                 time.sleep(0.25)
             else:
-                if int(time.time() - start) % 1 == 0:
-                    print("⏳ Slot not available yet")
+                print("⏳ Slot not available yet")
                 time.sleep(0.25)
 
         if booked:
@@ -272,6 +271,7 @@ if __name__ == "__main__":
             print("❌ Booking failed")
 
         print("🔁 Waiting for next cycle\n")
+
 
 
 
