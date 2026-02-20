@@ -168,7 +168,7 @@ def next_trigger():
     for i in range(8):
         d = (n + timedelta(days=i)).date()
         if d.weekday() in (0, 3):  # Monday & Thursday
-            t = TZ.localize(datetime.combine(d, datetime.min.time())) - timedelta(seconds=4)
+            t = TZ.localize(datetime.combine(d, datetime.min.time())) - timedelta(seconds=5)
             if t > n:
                 return t
     fatal("No trigger time found")
@@ -271,6 +271,7 @@ if __name__ == "__main__":
             print("❌ Booking failed")
 
         print("🔁 Waiting for next cycle\n")
+
 
 
 
