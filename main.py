@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import threading
 import requests
 import pytz
 from datetime import datetime, timedelta
@@ -168,7 +169,7 @@ def next_trigger():
     for i in range(8):
         d = (n + timedelta(days=i)).date()
         if d.weekday() in (0, 3):  # Monday & Thursday
-            t = TZ.localize(datetime.combine(d, datetime.min.time())) - timedelta(seconds=5)
+            t = TZ.localize(datetime.combine(d, datetime.min.time())) - timedelta(seconds=10)
             if t > n:
                 return t
     fatal("No trigger time found")
@@ -223,11 +224,21 @@ def book(slot_id):
     print(f"🎉 Booked! Ticket ID: {r.get('id')}")
     return True
 
+def keep_alive():
+    while True:
+        try:
+            requests.get("https://httpbin.org/get", timeout=5)
+        except:
+            pass
+        time.sleep(300)  # every 5 minutes
+
 # ---------------- MAIN ----------------
 
 if __name__ == "__main__":
     telegram("🤖 TIMP Auto-Booking Bot started")
     login()
+    
+    threading.Thread(target=keep_alive, daemon=True).start()
 
     while True:
         trigger = next_trigger()
@@ -271,6 +282,7 @@ if __name__ == "__main__":
             print("❌ Booking failed")
 
         print("🔁 Waiting for next cycle\n")
+
 
 
 
